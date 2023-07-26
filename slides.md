@@ -8,6 +8,228 @@ title: Understanding Language Server Protocol
 
 # Understanding Language Server Protocol - autocomplete, formatting
 
+---
+layout: section
+---
+ 
+# What does a Language Server provide?
+
+---
+
+# Diagnostics
+
+<img src="diagnostics.gif"/>
+
+---
+
+# Autocomplete
+
+<img src="autocomplete.gif"/>
+
+---
+
+# Formatting
+
+<img src="formatting.gif"/>
+
+---
+
+# Go to definition
+
+<img src="gotodefinition.gif"/>
+
+---
+
+# Before Language Server Protocol
+
+* `go guru`
+
+---
+
+# Initialization
+
+```mermaid
+sequenceDiagram
+    User->>Editor: open project
+		Editor->>LSP: start LSP server
+		Editor->>+LSP: send `initialize` request
+		LSP->>-Editor: return `initialize` result
+		LSP-->>Editor: send `initialized` notification
+```
+
+---
+
+# Opening a file
+
+```mermaid
+sequenceDiagram
+		Editor->>LSP: send `textDocument/didOpen` notification
+		LSP-->>Editor: send `textDocument/publishDiagnostics` notification
+```
+
+---
+
+# Editing an opened file
+
+```mermaid
+sequenceDiagram
+		Editor->>LSP: send `textDocument/didChange` notification
+		LSP-->>Editor: send `textDocument/publishDiagnostics` notification
+```
+
+---
+layout: section
+---
+
+# How are messages sent and received?
+
+---
+
+# Reading from stdout
+
+```sh
+ls /
+```
+
+```
+Applications System       Volumes      cores        etc          nix          
+private      sbin         usr          Library      Users        bin
+dev          home         opt          run          tmp          var
+```
+
+---
+
+# Sending data to a program over stdin
+
+```sh
+echo "I drank a cup of tea." | wc -w
+```
+
+```
+6
+```
+
+---
+
+# Writing our own word count
+
+```go {0-3|5|6-11|11-13}
+func main() {
+	count(os.Stdout, os.Stdin)
+}
+
+func count(w io.Writer, r io.Reader) {
+	scanner := bufio.NewScanner(r)
+	scanner.Split(bufio.ScanWords)
+	var wc int
+	for scanner.Scan() {
+		wc++
+	}
+	msg := fmt.Sprintf("%d words\n", wc)
+	w.Write([]byte(msg))
+}
+```
+
+---
+
+# Sending and receiving JSON
+
+```sh
+echo '{ "drankItem": { "name": "Earl Grey", "qty": 1 } }' | jq -r .drankItem
+```
+
+```json
+{
+  "name": "Earl Grey",
+  "qty": 1
+}
+```
+
+---
+layout: two-cols-header
+---
+
+# JSON-RPC
+
+::left::
+
+* Standard for JSON APIs
+* Supports methods and notifications
+* Both sides can initiate
+* Pipelined
+   * Receive a notification while waiting for a method response
+   * Send a request while receiving a response
+* "Transport agnostic"
+
+::right::
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "subtract",
+  "params": [
+    42,
+    23
+  ],
+  "id": 1
+}
+```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "result": 19,
+  "id": 1
+}
+```
+
+---
+
+# Base protocol
+
+```json {1,1|2,2|3-10}
+Content-Length: 123\r\n
+\r\n
+{
+	"jsonrpc": "2.0",
+	"id": 1,
+	"method": "textDocument/completion",
+	"params": {
+		...
+	}
+}
+```
+
+https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#contentPart
+
+---
+
+# Reading a request
+
+```go
+type Request struct {
+	ProtocolVersion string           `json:"jsonrpc"`
+	ID              *json.RawMessage `json:"id"`
+	Method          string           `json:"method"`
+	Params          json.RawMessage  `json:"params"`
+}
+
+func Read(r *bufio.Reader) (req Request, err error) {
+	// Read header.
+	header, err := textproto.NewReader(r).ReadMIMEHeader()
+	if err != nil {
+		return
+	}
+	contentLength, err := strconv.ParseInt(header.Get("Content-Length"), 10, 64)
+	if err != nil {
+		return req, ErrInvalidContentLengthHeader
+	}
+	// Read body.
+	err = json.NewDecoder(io.LimitReader(r, contentLength)).Decode(&req)
+	return
+}
+```
+
 <!--
 
 Part of Go's brilliant developer experience is the integration of gopls with text editors like VS Code, Neovim to provide features.
@@ -86,3 +308,9 @@ https://www.jsonrpc.org/specification
 # didOpen
 
 > Client support for textDocument/didOpen, textDocument/didChange and textDocument/didClose notifications is mandatory in the protocol and clients can not opt out supporting them. This includes both full and incremental synchronization in the textDocument/didChange notification.
+
+---
+
+# textEdit
+
+				
