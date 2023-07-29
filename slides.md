@@ -9,16 +9,12 @@ title: Understanding Language Server Protocol
 # Understanding Language Server Protocol - autocomplete, formatting
 
 ---
-layout: section
----
- 
-# What does a Language Server provide?
 
----
+# Language Server Protocol (LSP)
 
-# Diagnostics
+> ... defines the protocol used between an editor or IDE and a language server that provides language features like auto complete, go to definition, find all references etc.
 
-<img src="diagnostics.gif"/>
+https://microsoft.github.io/language-server-protocol/
 
 ---
 
@@ -28,64 +24,59 @@ layout: section
 
 ---
 
-# Formatting
-
-<img src="formatting.gif"/>
-
----
-
 # Go to definition
 
 <img src="gotodefinition.gif"/>
 
 ---
 
-# Before Language Server Protocol
+# Diagnostics
 
-* `go guru`
+<img src="diagnostics.gif"/>
 
 ---
 
-# Initialization
+# Formatting
+
+<img src="formatting.gif"/>
+
+---
+
+# One protocol for all languages
 
 ```mermaid
-sequenceDiagram
-    User->>Editor: open project
-		Editor->>LSP: start LSP server
-		Editor->>+LSP: send `initialize` request
-		LSP->>-Editor: return `initialize` result
-		LSP-->>Editor: send `initialized` notification
+flowchart LR
+    vsc[VS Code] --> lspp
+    nvim[Neovim] --> lspp[Language Server Protocol]
+    jb[JetBrains] --> lspp
+    oe[Other editors...] --> lspp
+    lspp --> gp[Go - gopls]
+    lspp --> tss[TypeScript - tsserver]
+    lspp --> jdtls[Java - jdtls]
+    lspp --> other[Other languages...]
 ```
 
 ---
 
-# Opening a file
-
-```mermaid
-sequenceDiagram
-		Editor->>LSP: send `textDocument/didOpen` notification
-		LSP-->>Editor: send `textDocument/publishDiagnostics` notification
-```
-
----
-
-# Editing an opened file
-
-```mermaid
-sequenceDiagram
-		Editor->>LSP: send `textDocument/didChange` notification
-		LSP-->>Editor: send `textDocument/publishDiagnostics` notification
-```
+<img src="lsp.jpg"/>
 
 ---
 layout: section
 ---
 
-# How are messages sent and received?
+# Stdin / Stdout
 
 ---
 
-# Reading from stdout
+# Stdin
+
+```sh
+ls /
+```
+
+---
+
+# Stdout
 
 ```sh
 ls /
@@ -99,7 +90,7 @@ dev          home         opt          run          tmp          var
 
 ---
 
-# Sending data to a program over stdin
+# You can send data to a program over stdin
 
 ```sh
 echo "I drank a cup of tea." | wc -w
@@ -111,7 +102,34 @@ echo "I drank a cup of tea." | wc -w
 
 ---
 
-# Writing our own word count
+# The data can be anything
+
+```sh
+cat public/diagnostics.gif | shasum -a 256
+```
+
+```
+f83f8b9706f64f550782d61063e21adca0a79162817dc7fd24686d6dc8a95bc4  -
+```
+
+---
+
+# Including structured data
+
+```sh
+echo '{ "drankItem": { "name": "Earl Grey", "qty": 1 } }' | jq -r .drankItem
+```
+
+```json
+{
+  "name": "Earl Grey",
+  "qty": 1
+}
+```
+
+---
+
+# `os.Stdin` is an `io.Reader`, `os.Stdout` is an `io.Writer`
 
 ```go {0-3|5|6-11|11-13}
 func main() {
@@ -132,18 +150,94 @@ func count(w io.Writer, r io.Reader) {
 
 ---
 
-# Sending and receiving JSON
+# Message format
 
-```sh
-echo '{ "drankItem": { "name": "Earl Grey", "qty": 1 } }' | jq -r .drankItem
-```
-
-```json
+```json {1-2|3-16|4-5|6|7-15}
+Content-Length: 219\r\n
+\r\n
 {
-  "name": "Earl Grey",
-  "qty": 1
+	"jsonrpc": "2.0",
+	"method": "textDocument/declaration",
+	"id": 1,
+	"params": {
+		"textDocument": {
+			"uri": "file:///Users/adrian/project/pizza.cook"
+		},
+		"position": {
+			"line": 10,
+			"character": 0
+		},
+	}
 }
 ```
+
+https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#contentPart
+
+
+
+
+---
+
+# LSP clients can send requests that expect a response
+
+```mermaid
+flowchart LR
+    Editor--stdin-->LS[Language Server]
+    LS--stdout-->Editor
+```
+
+---
+
+# LSP clients can send Notifications
+
+```mermaid
+flowchart LR
+    Editor-.stdin.->LS[Language Server]
+```
+
+---
+
+# 
+
+```mermaid
+flowchart LR
+    LS[Language Server]-.stdout.->Editor
+```
+
+---
+
+# Initialization
+
+```mermaid
+sequenceDiagram
+	User->>Editor: open project
+	Editor->>LSP: start LSP server
+	Editor->>+LSP: send `initialize` request
+	LSP->>-Editor: return `initialize` result
+	LSP-->>Editor: send `initialized` notification
+```
+
+---
+
+# Opening a file
+
+```mermaid
+sequenceDiagram
+	Editor->>LSP: send `textDocument/didOpen` notification
+	LSP-->>Editor: send `textDocument/publishDiagnostics` notification
+```
+
+---
+
+# Editing an opened file
+
+```mermaid
+sequenceDiagram
+		Editor->>LSP: send `textDocument/didChange` notification
+		LSP-->>Editor: send `textDocument/publishDiagnostics` notification
+```
+
+---
 
 ---
 layout: two-cols-header
@@ -185,25 +279,6 @@ layout: two-cols-header
 
 ---
 
-# Base protocol
-
-```json {1,1|2,2|3-10}
-Content-Length: 123\r\n
-\r\n
-{
-	"jsonrpc": "2.0",
-	"id": 1,
-	"method": "textDocument/completion",
-	"params": {
-		...
-	}
-}
-```
-
-https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#contentPart
-
----
-
 # Reading a request
 
 ```go
@@ -238,14 +313,6 @@ This standardisation allows multiple text editors to benefit from a single imple
 In this session, we'll go deeper to find out what's being passed between text editors and the language server, how we can create our own LSPs with Go, and how a project is building on top of the gopls LSP to add autocomplete features to HTML templates.
 
 -->
-
----
-
-# The protocol 
-
-> The Language Server Protocol (LSP) defines the protocol used between an editor or IDE and a language server that provides language features like auto complete, go to definition, find all references etc.
-
-https://microsoft.github.io/language-server-protocol/
 
 ---
 layout: two-cols-header
