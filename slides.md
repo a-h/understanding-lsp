@@ -282,7 +282,7 @@ sequenceDiagram
 layout: two-cols-header
 ---
 
-# The spec defines request messages as TypeScript interfaces
+# Request messages are defined as TypeScript interfaces
 
 ```ts {|6,8,13}
 interface Message {
@@ -328,7 +328,7 @@ func (r Request) IsNotification() bool {
 
 ---
 
-# Reading a message from stdin
+# Reading a message
 
 ```go {|2-5|6-9|10-13|14-16}
 func Read(r *bufio.Reader) (req Request, err error) {
@@ -353,7 +353,7 @@ func Read(r *bufio.Reader) (req Request, err error) {
 
 ---
 
-# The spec defines repsonse messages as TypeScript interfaces
+# Response messages are defined as TypeScript interfaces
 
 ```ts
 interface ResponseMessage extends Message {
@@ -394,7 +394,7 @@ func (e *Error) Error() string { return e.Message }
 
 ---
 
-# Writing a response to stdout
+# Writing a response
 
 ```go {|2-5|6-9|10-12|13}
 func Write(w *bufio.Writer, resp Message) (err error) {
@@ -424,6 +424,58 @@ sequenceDiagram
 	Editor->>+LSP: send `initialize` request
 	LSP->>-Editor: return `initialize` result
 	LSP-->>Editor: send `initialized` notification
+```
+
+---
+
+# Keep reading messages
+
+
+```go
+func main() {
+	for {
+		req, err := Read(t.reader)
+		if err != nil { 
+			return err 
+		}
+		switch req.Method {
+		}
+		if req.IsNotification() {
+			t.handleNotification(req)
+			return
+		}
+		t.handleRequestResponse(req)
+	}
+}
+```
+
+---
+
+# Handle request/response messages
+
+```go
+func (t *Transport) handleRequestResponse(req Request) {
+	mh, ok := t.methodHandlers[req.Method]
+	if !ok {
+		slog.Error("method not found")
+		if err := Write(t.writer, NewResponseError(req.ID, ErrMethodNotFound)); err != nil {
+			slog.Error("failed to respond", slog.Any("error", err))
+		}
+		return
+	}
+	var res Response
+	result, err := mh(req.Params)
+	if err != nil {
+		log.Error("failed to handle", slog.Any("error", err))
+		res = NewResponseError(req.ID, err)
+	} else {
+		res = NewResponse(req.ID, result)
+	}
+	if err = Write(t.writer, res); err != nil {
+		log.Error("failed to respond", slog.Any("error", err))
+		t.error(fmt.Errorf("failed to respond: %w", err))
+	}
+}
 ```
 
 ---
