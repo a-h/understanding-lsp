@@ -117,13 +117,15 @@ f83f8b9706f64f550782d61063e21adca0a79162817dc7fd24686d6dc8a95bc4  -
 # Including structured data
 
 ```sh
-echo '{ "drankItem": { "name": "Earl Grey", "qty": 1 } }' | jq -r .drankItem
+echo '{ "drankItem": { "name": "Earl Grey", "qty": 1 } }' | jq
 ```
 
 ```json
 {
-  "name": "Earl Grey",
-  "qty": 1
+  "drankItem": {
+    "name": "Earl Grey",
+    "qty": 1
+  }
 }
 ```
 
@@ -131,26 +133,44 @@ echo '{ "drankItem": { "name": "Earl Grey", "qty": 1 } }' | jq -r .drankItem
 
 # `os.Stdin` is an `io.Reader`, `os.Stdout` is an `io.Writer`
 
-```go {0-3|5|6-11|11-13}
+```go {0-3|5|6-10|11-13}
 func main() {
-	count(os.Stdout, os.Stdin)
+	formatJSON(os.Stdout, os.Stdin)
 }
 
-func count(w io.Writer, r io.Reader) {
-	scanner := bufio.NewScanner(r)
-	scanner.Split(bufio.ScanWords)
-	var wc int
-	for scanner.Scan() {
-		wc++
+func formatJSON(w io.Writer, r io.Reader) (err error) {
+	var m map[string]any
+	err = json.NewDecoder(r).Decode(&m)
+	if err != nil {
+		return
 	}
-	msg := fmt.Sprintf("%d words\n", wc)
-	w.Write([]byte(msg))
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "	")
+	return enc.Encode(m)
 }
 ```
 
 ---
+layout: section
+---
 
-# Message format
+# LSP Message Format
+
+---
+
+# LSP clients can send requests that expect a response
+
+```mermaid
+sequenceDiagram
+    participant editor as Editor
+    participant lsp as Language Server
+    editor->>+lsp: request over stdin
+    lsp->>-editor: response over stdout
+```
+
+---
+
+# Request messages have header and content parts
 
 ```json {1-2|3-16|4-5|6|7-15}
 Content-Length: 219\r\n
@@ -173,35 +193,224 @@ Content-Length: 219\r\n
 
 https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#contentPart
 
+---
 
+# Response messages are linked to the request by the ID
+
+```json {1-2|4|5|6-14}
+Content-Length: 222\r\n
+\r\n
+{
+	"jsonrpc": "2.0",
+	"id": 1,
+	"result": [
+		{
+			"uri": "file:///Users/adrian/project/pizza.cook",
+			"range": {
+			    "start": { "line": 5, "character": 23 },
+			    "end" : { "line": 6, "character": 0 }
+			},
+		}
+	]
+}
+```
+---
+
+# Editors can send notifications to the server
+
+```mermaid
+sequenceDiagram
+    participant editor as Editor
+    participant lsp as Language Server
+    editor-->>lsp: notification over stdin
+```
 
 
 ---
 
-# LSP clients can send requests that expect a response
+# Servers can send notifications to the editor
 
 ```mermaid
-flowchart LR
-    Editor--stdin-->LS[Language Server]
-    LS--stdout-->Editor
+sequenceDiagram
+    participant editor as Editor
+    participant lsp as Language Server
+    lsp-->>editor: notification over stdout
 ```
 
 ---
 
-# LSP clients can send Notifications
+# Notifications are the same as requests, but without an ID
 
-```mermaid
-flowchart LR
-    Editor-.stdin.->LS[Language Server]
+TODO: Update this to be a realistic notification
+
+```json {1-2|3-16|4-5|6|7-15}
+Content-Length: 219\r\n
+\r\n
+{
+	"jsonrpc": "2.0",
+	"method": "textDocument/declaration",
+	"params": {
+		"textDocument": {
+			"uri": "file:///Users/adrian/project/pizza.cook"
+		},
+		"position": {
+			"line": 10,
+			"character": 0
+		},
+	}
+}
 ```
 
 ---
 
-# 
+# Messages are interleaved
 
 ```mermaid
-flowchart LR
-    LS[Language Server]-.stdout.->Editor
+sequenceDiagram
+    participant editor as Editor
+    participant lsp as Language Server
+    editor->>+lsp: request 1
+    editor-->>lsp: notification
+    editor->>+lsp: request 2
+    lsp->>-editor: response 2
+    lsp-->>editor: notification
+    lsp->>-editor: response 1
+```
+
+
+---
+layout: two-cols-header
+---
+
+# The spec defines request messages as TypeScript interfaces
+
+```ts {|6,8,13}
+interface Message {
+	jsonrpc: string;
+}
+
+interface RequestMessage extends Message {
+	id: integer | string;
+	method: string;
+	params?: array | object;
+}
+
+interface NotificationMessage extends Message {
+	method: string;
+	params?: array | object;
+}
+```
+
+---
+
+# We can use `json.RawMessage` to defer processing
+
+```go
+type Message interface {
+  IsJSONRPC() bool
+}
+
+type Request struct {
+  Version string           `json:"jsonrpc"`
+  ID      *json.RawMessage `json:"id"`
+  Method  string           `json:"method"`
+  Params  json.RawMessage  `json:"params"`
+}
+
+func (r Request) IsJSONRPC() bool {
+  return r.Version == "2.0"
+}
+
+func (r Request) IsNotification() bool {
+	return r.ID == nil
+}
+```
+
+---
+
+# Reading a message from stdin
+
+```go {|2-5|6-9|10-13|14-16}
+func Read(r *bufio.Reader) (req Request, err error) {
+	header, err := textproto.NewReader(r).ReadMIMEHeader()
+	if err != nil {
+		return
+	}
+	contentLength, err := strconv.ParseInt(header.Get("Content-Length"), 10, 64)
+	if err != nil {
+		return req, ErrInvalidContentLengthHeader
+	}
+	err = json.NewDecoder(io.LimitReader(r, contentLength)).Decode(&req)
+	if err != nil {
+		return
+	}
+	if !req.IsJSONRPC() {
+		return req, ErrInvalidRequest
+	}
+	return
+}
+```
+
+---
+
+# The spec defines repsonse messages as TypeScript interfaces
+
+```ts
+interface ResponseMessage extends Message {
+	id: integer | string | null;
+	result?: string | number | boolean | array | object | null;
+	error?: ResponseError;
+}
+
+interface ResponseError {
+	code: integer;
+	message: string;
+	data?: string | number | boolean | array | object | null;
+}
+```
+
+---
+
+# In Go, TypeScript unions are reduced to `any`
+
+```go
+type Response struct {
+	ProtocolVersion string           `json:"jsonrpc"`
+	ID              *json.RawMessage `json:"id"`
+	Result          any              `json:"result"`
+	Error           *Error           `json:"error"`
+}
+
+func (r Response) IsJSONRPC() bool { return r.ProtocolVersion == "2.0" }
+
+type Error struct {
+	Code int64 `json:"code"`
+	Message string `json:"message"`
+	Data any `json:"data"`
+}
+
+func (e *Error) Error() string { return e.Message }
+```
+
+---
+
+# Writing a response to stdout
+
+```go {|2-5|6-9|10-12|13}
+func Write(w *bufio.Writer, resp Message) (err error) {
+	body, err := json.Marshal(resp)
+	if err != nil {
+		return
+	}
+	headers := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(body))
+	if _, err = w.WriteString(headers); err != nil {
+		return
+	}
+	if _, err = w.Write(body); err != nil {
+		return
+	}
+	return w.Flush()
+}
 ```
 
 ---
@@ -379,5 +588,4 @@ https://www.jsonrpc.org/specification
 ---
 
 # textEdit
-
 				
