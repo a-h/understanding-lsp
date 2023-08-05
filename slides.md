@@ -423,7 +423,7 @@ sequenceDiagram
 	Editor->>LSP: start LSP server
 	Editor->>+LSP: send `initialize` request
 	LSP->>-Editor: return `initialize` result
-	LSP-->>Editor: send `initialized` notification
+	Editor-->>LSP: send `initialized` notification
 ```
 
 ---
@@ -433,19 +433,14 @@ sequenceDiagram
 
 ```go
 func main() {
-	for {
-		req, err := Read(t.reader)
+		req, err := Read(os.Stdin)
 		if err != nil { 
 			return err 
 		}
-		switch req.Method {
+		if req.Method != "initialize" {
+			os.Exit(1)
 		}
-		if req.IsNotification() {
-			t.handleNotification(req)
-			return
-		}
-		t.handleRequestResponse(req)
-	}
+		err := Write(os.Stdout)
 }
 ```
 
