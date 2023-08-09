@@ -277,7 +277,6 @@ sequenceDiagram
     lsp->>-editor: response 1
 ```
 
-
 ---
 layout: two-cols-header
 ---
@@ -394,11 +393,11 @@ func (e *Error) Error() string { return e.Message }
 
 ---
 
-# Writing a response
+# Sending a notification or response message
 
 ```go {|2-5|6-9|10-12|13}
-func Write(w *bufio.Writer, resp Message) (err error) {
-	body, err := json.Marshal(resp)
+func Write(w *bufio.Writer, msg Message) (err error) {
+	body, err := json.Marshal(msg)
 	if err != nil {
 		return
 	}
@@ -414,8 +413,87 @@ func Write(w *bufio.Writer, resp Message) (err error) {
 ```
 
 ---
+layout: section
+---
+
+# Joining it all together
+
+---
+
+# Define handlers
+
+```go
+type NotificationHandler func(params json.RawMessage) (err error)
+type MethodHandler func(params json.RawMessage) (result any, err error)
+
+type Transport struct {
+	reader               *bufio.Reader
+	writer               *bufio.Writer
+	notificationHandlers map[string]NotificationHandler
+	methodHandlers       map[string]MethodHandler
+}
+
+func (t *Transport) HandleMethod(name string, method MethodHandler) {
+	t.methodHandlers[name] = method
+}
+
+func (t *Transport) HandleNotification(name string, notification NotificationHandler) {
+	t.notificationHandlers[name] = notification
+}
+```
+
+---
+
+# Process messages
+
+```go
+func (t *Transport) Process() (err error) {
+	req, err := Read(t.reader)
+	if err != nil { return err }
+	if req.IsNotification() {
+		if nh, ok := t.notificationHandlers[req.Method]; ok {
+			return nh(req.Params)
+		}
+	} else {
+		mh, ok := t.methodHandlers[req.Method]
+		if !ok {
+			return Write(t.writer, NewResponseError(req.ID, ErrMethodNotFound))
+		}
+		result, err := mh(req.Params)
+		if err != nil {
+			return Write(t.writer, NewResponseError(req.ID, err))
+		}
+		return Write(t.writer, NewResponse(req.ID, result))
+	}
+}
+```
+
+---
+layout: section
+---
+
+# Summary
+
+---
+
+# Summary
+
+* LSP messages are sent over stdin/stdout
+* Messages consist of MIME headers, followed by a JSON RPC body
+* Mesages can be requests/responses correlated by ID, or notifications which don't need a response
+* The text editor doesn't need to wait for a response to a request to send additional requests
+* The LSP _or_ text editor can send notifications, such as `textDocument/didOpen` or `textDocument/publishDiagnostics`
+* Our new `Transport` type can be used to register notification and request/response handler functions
+
+---
+layout: section
+---
 
 # Initialization
+
+---
+
+# Sequence
 
 ```mermaid
 sequenceDiagram
@@ -428,50 +506,247 @@ sequenceDiagram
 
 ---
 
-# Keep reading messages
+# `initialize` - TypeScript
 
-
-```go
-func main() {
-		req, err := Read(os.Stdin)
-		if err != nil { 
-			return err 
-		}
-		if req.Method != "initialize" {
-			os.Exit(1)
-		}
-		err := Write(os.Stdout)
+```typescript
+interface InitializeParams extends WorkDoneProgressParams {
+	processId: integer | null;
+	clientInfo?: {
+		name: string;
+		version?: string;
+	};
+	locale?: string;
+	initializationOptions?: LSPAny;
+	capabilities: ClientCapabilities;
+	trace?: TraceValue;
+	workspaceFolders?: WorkspaceFolder[] | null;
 }
 ```
 
 ---
 
-# Handle request/response messages
+# `ClientCapabilities`
+
+```typescript
+interface ClientCapabilities {
+	workspace?: {
+		applyEdit?: boolean;
+		workspaceEdit?: WorkspaceEditClientCapabilities;
+		didChangeConfiguration?: DidChangeConfigurationClientCapabilities;
+		didChangeWatchedFiles?: DidChangeWatchedFilesClientCapabilities;
+		inlineValue?: InlineValueWorkspaceClientCapabilities;
+		// ...
+		inlayHint?: InlayHintWorkspaceClientCapabilities;
+		diagnostics?: DiagnosticWorkspaceClientCapabilities;
+	};
+	// ...
+	window?: {
+		workDoneProgress?: boolean;
+		showMessage?: ShowMessageRequestClientCapabilities;
+		showDocument?: ShowDocumentClientCapabilities;
+	};
+
+	// ...
+	experimental?: LSPAny;
+}
+```
+
+---
+
+# `InitializeParams` - Go
 
 ```go
-func (t *Transport) handleRequestResponse(req Request) {
-	mh, ok := t.methodHandlers[req.Method]
-	if !ok {
-		slog.Error("method not found")
-		if err := Write(t.writer, NewResponseError(req.ID, ErrMethodNotFound)); err != nil {
-			slog.Error("failed to respond", slog.Any("error", err))
+type InitializeParams struct {
+	// Information about the client
+	ClientInfo *ClientInfo `json:"clientInfo"`
+
+	// The capabilities provided by the client (editor or tool)
+	Capabilities ClientCapabilities `json:"capabilities"`
+}
+
+type ClientInfo struct {
+	Name    string  `json:"name"`
+	Version *string `json:"version"`
+}
+
+type ClientCapabilities struct {
+}
+```
+
+---
+
+# `ServerCapabilities` - TypeScript
+
+```typescript
+interface ServerCapabilities {
+	positionEncoding?: PositionEncodingKind;
+	// ...
+	completionProvider?: CompletionOptions;
+	hoverProvider?: boolean | HoverOptions;
+	signatureHelpProvider?: SignatureHelpOptions;
+	declarationProvider?: boolean | DeclarationOptions | DeclarationRegistrationOptions;
+	definitionProvider?: boolean | DefinitionOptions;
+	typeDefinitionProvider?: boolean | TypeDefinitionOptions | TypeDefinitionRegistrationOptions;
+	implementationProvider?: boolean | ImplementationOptions | ImplementationRegistrationOptions;
+	referencesProvider?: boolean | ReferenceOptions;
+	// ...
+	documentFormattingProvider?: boolean | DocumentFormattingOptions;
+	// ...
+	renameProvider?: boolean | RenameOptions;
+	// ...
+	diagnosticProvider?: DiagnosticOptions | DiagnosticRegistrationOptions;
+	// ...
+	experimental?: LSPAny;
+}
+```
+
+---
+
+# `ServerCapabilities` - Go
+
+```go
+type ServerCapabilities struct {
+	TextDocumentSync TextDocumentSyncKind `json:"textDocumentSync"`
+}
+
+type TextDocumentSyncKind int
+
+const (
+	TextDocumentSyncKindNone TextDocumentSyncKind = iota
+	TextDocumentSyncKindFull
+	TextDocumentSyncKindIncremental
+)
+```
+
+---
+
+# `initialize` Handler
+
+```go
+func main() {
+	p := protocol.New(os.Stdin, os.Stdout)
+	p.HandleMethod("initialize", func(params json.RawMessage) (result any, err error) {
+		var initializeParams messages.InitializeParams
+		if err = json.Unmarshal(params, &initializeParams); err != nil {
+			return result, err
 		}
-		return
-	}
-	var res Response
-	result, err := mh(req.Params)
-	if err != nil {
-		log.Error("failed to handle", slog.Any("error", err))
-		res = NewResponseError(req.ID, err)
-	} else {
-		res = NewResponse(req.ID, result)
-	}
-	if err = Write(t.writer, res); err != nil {
-		log.Error("failed to respond", slog.Any("error", err))
-		t.error(fmt.Errorf("failed to respond: %w", err))
+		result = messages.InitializeResult{
+			Capabilities: messages.ServerCapabilities{
+				TextDocumentSync: messages.TextDocumentSyncKindFull,
+			},
+			ServerInfo: &messages.ServerInfo{ Name: "examplelsp" },
+		}
+		return result, err
+	})
+	for {
+		if err := p.Process(); err != nil {
+			return
+		}
 	}
 }
 ```
+
+---
+
+# `initialized` notification handler
+
+```go
+p.HandleNotification("initialized", func(params json.RawMessage) (err error) {
+	go func() {
+		count := 1
+		for {
+			time.Sleep(time.Second * 1)
+			p.Notify(messages.ShowMessageMethod, messages.ShowMessageParams{
+				Type:    messages.MessageTypeInfo,
+				Message: fmt.Sprintf("Shown %d messages", count),
+			})
+			count++
+		}
+	}()
+	return nil
+})
+```
+
+---
+
+# Sending notifications to the text editor
+
+```go
+type Notification struct {
+	ProtocolVersion string `json:"jsonrpc"`
+	Method          string `json:"method"`
+	Params          any    `json:"params"`
+}
+
+func (n Notification) IsJSONRPC() bool {
+	return n.ProtocolVersion == "2.0"
+}
+```
+
+```go
+func (t *Transport) Notify(method string, params any) (err error) {
+	n := Notification{
+		ProtocolVersion: "2.0",
+		Method:          method,
+		Params:          params,
+	}
+	return Write(t.writer, n)
+}
+```
+
+---
+layout: section
+---
+
+# Summary - initialization
+
+---
+
+# Summary - initialization
+
+* The text editor sends an `initialize` request that explains its capabilities.
+* The LSP returns a response that states its capabilities.
+* After the `initialize` request/response, the text editor sends an `initialized` notification.
+* Before using a capability, the LSP _should_ check to see if the text editor supports it.
+* The LSP can start sending notifications to the client with the `Notify` method.
+* The most basic LSP could simply remind you to take a break by sending you a notification.
+
+---
+layout: section
+---
+
+# Using our new LSP
+
+---
+
+# Using our new LSP - Neovim
+
+## init.lua
+
+```lua
+vim.api.nvim_create_autocmd('FileType', {
+  pattern = 'cook',
+  callback = function()
+    vim.lsp.start({
+      name = "examplelsp",
+      cmd = { "examplelsp" },
+      root_dir = vim.fs.dirname(vim.fs.find({ ".examplelsp" }, { upward = true })[1]),
+    })
+  end,
+})
+```
+
+## startup.sh
+
+```sh
+nvim --clean -u ./neovim-config/init.lua pizza.cook
+```
+
+---
+
+## Notifications result
+
+<img src="notifications.png"/>
 
 ---
 
@@ -495,72 +770,6 @@ sequenceDiagram
 
 ---
 
----
-layout: two-cols-header
----
-
-# JSON-RPC
-
-::left::
-
-* Standard for JSON APIs
-* Supports methods and notifications
-* Both sides can initiate
-* Pipelined
-   * Receive a notification while waiting for a method response
-   * Send a request while receiving a response
-* "Transport agnostic"
-
-::right::
-
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "subtract",
-  "params": [
-    42,
-    23
-  ],
-  "id": 1
-}
-```
-
-```json
-{
-  "jsonrpc": "2.0",
-  "result": 19,
-  "id": 1
-}
-```
-
----
-
-# Reading a request
-
-```go
-type Request struct {
-	ProtocolVersion string           `json:"jsonrpc"`
-	ID              *json.RawMessage `json:"id"`
-	Method          string           `json:"method"`
-	Params          json.RawMessage  `json:"params"`
-}
-
-func Read(r *bufio.Reader) (req Request, err error) {
-	// Read header.
-	header, err := textproto.NewReader(r).ReadMIMEHeader()
-	if err != nil {
-		return
-	}
-	contentLength, err := strconv.ParseInt(header.Get("Content-Length"), 10, 64)
-	if err != nil {
-		return req, ErrInvalidContentLengthHeader
-	}
-	// Read body.
-	err = json.NewDecoder(io.LimitReader(r, contentLength)).Decode(&req)
-	return
-}
-```
-
 <!--
 
 Part of Go's brilliant developer experience is the integration of gopls with text editors like VS Code, Neovim to provide features.
@@ -570,69 +779,3 @@ In this session, we'll go deeper to find out what's being passed between text ed
 
 -->
 
----
-layout: two-cols-header
----
-
-# So, what is it?
-
-::left::
-
-* JSON-RPC messages
-
-> JSON-RPC is a stateless, light-weight remote procedure call (RPC) protocol. Primarily this specification defines several data structures and the rules around their processing. It is transport agnostic in that the concepts can be used within the same process, over sockets, over http, or in many various message passing environments. It uses JSON (RFC 4627) as data format.
-
-> It is designed to be simple!
-
-https://www.jsonrpc.org/specification
-
-::right::
-
-```json
-{"jsonrpc": "2.0", "method": "subtract", "params": [42, 23], "id": 1}
-```
-
-```json
-{"jsonrpc": "2.0", "result": 19, "id": 1}
-```
-
----
-
-# JSON-RPC over stdin/stdout
-
-
----
-
-# JSON-RPC batch operations
-
-
----
-
-# Starting up the LSP - VS Code
-
-* Make a VS Code extension
-
----
-
-# Starting up the LSP - Neovim
-
-* Match based on filename / pattern.
-
----
-
-# Initialize request
-
-* First request sent from the editor to the LSP
-* Sets out client capabilities
-* Server returns its capabilities
-
----
-
-# didOpen
-
-> Client support for textDocument/didOpen, textDocument/didChange and textDocument/didClose notifications is mandatory in the protocol and clients can not opt out supporting them. This includes both full and incremental synchronization in the textDocument/didChange notification.
-
----
-
-# textEdit
-				
