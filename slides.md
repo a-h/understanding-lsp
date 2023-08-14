@@ -241,23 +241,20 @@ sequenceDiagram
 
 # Notifications are the same as requests, but without an ID
 
-TODO: Update this to be a realistic notification
-
-```json {1-2|3-16|4-5|6|7-15}
-Content-Length: 219\r\n
+```json {1-2|3-16|4-5|6-13}
+Content-Length: 320\r\n
 \r\n
 {
-	"jsonrpc": "2.0",
-	"method": "textDocument/declaration",
-	"params": {
-		"textDocument": {
-			"uri": "file:///Users/adrian/project/pizza.cook"
-		},
-		"position": {
-			"line": 10,
-			"character": 0
-		},
-	}
+  "jsonrpc": "2.0",
+  "method": "textDocument/didOpen",
+  "params": {
+    "textDocument": {
+      "text": "the full text of the document you just opened",
+      "version": 0,
+      "languageId": "cook",
+      "uri": "file:///Users/adrian/github.com/a-h/examplelsp/example-project/pizza.cook"
+    }
+  }
 }
 ```
 
@@ -354,7 +351,7 @@ func Read(r *bufio.Reader) (req Request, err error) {
 
 # Response messages are defined as TypeScript interfaces
 
-```ts
+```ts {|3,10}
 interface ResponseMessage extends Message {
 	id: integer | string | null;
 	result?: string | number | boolean | array | object | null;
@@ -372,7 +369,7 @@ interface ResponseError {
 
 # In Go, TypeScript unions are reduced to `any`
 
-```go
+```go {|4,13}
 type Response struct {
 	ProtocolVersion string           `json:"jsonrpc"`
 	ID              *json.RawMessage `json:"id"`
@@ -383,9 +380,32 @@ type Response struct {
 func (r Response) IsJSONRPC() bool { return r.ProtocolVersion == "2.0" }
 
 type Error struct {
-	Code int64 `json:"code"`
+	Code    int64 `json:"code"`
 	Message string `json:"message"`
-	Data any `json:"data"`
+	Data    any `json:"data"`
+}
+
+func (e *Error) Error() string { return e.Message }
+```
+
+---
+
+# And we don't need to process the ID at all
+
+```go {3}
+type Response struct {
+	ProtocolVersion string           `json:"jsonrpc"`
+	ID              *json.RawMessage `json:"id"`
+	Result          any              `json:"result"`
+	Error           *Error           `json:"error"`
+}
+
+func (r Response) IsJSONRPC() bool { return r.ProtocolVersion == "2.0" }
+
+type Error struct {
+	Code    int64 `json:"code"`
+	Message string `json:"message"`
+	Data    any `json:"data"`
 }
 
 func (e *Error) Error() string { return e.Message }
@@ -422,7 +442,7 @@ layout: section
 
 # Define handlers
 
-```go
+```go {|5-6|1-2|1|2|7-8,12-18}
 type NotificationHandler func(params json.RawMessage) (err error)
 type MethodHandler func(params json.RawMessage) (result any, err error)
 
@@ -431,6 +451,7 @@ type Transport struct {
 	writer               *bufio.Writer
 	notificationHandlers map[string]NotificationHandler
 	methodHandlers       map[string]MethodHandler
+	writeLock            *sync.Mutex
 }
 
 func (t *Transport) HandleMethod(name string, method MethodHandler) {
@@ -446,7 +467,7 @@ func (t *Transport) HandleNotification(name string, notification NotificationHan
 
 # Process messages
 
-```go
+```go {|2|4|5-7|9|10-12|13-17}
 func (t *Transport) Process() (err error) {
 	req, err := Read(t.reader)
 	if err != nil { return err }
@@ -457,13 +478,13 @@ func (t *Transport) Process() (err error) {
 	} else {
 		mh, ok := t.methodHandlers[req.Method]
 		if !ok {
-			return Write(t.writer, NewResponseError(req.ID, ErrMethodNotFound))
+			return t.write(NewResponseError(req.ID, ErrMethodNotFound))
 		}
 		result, err := mh(req.Params)
 		if err != nil {
-			return Write(t.writer, NewResponseError(req.ID, err))
+			return t.write(NewResponseError(req.ID, err))
 		}
-		return Write(t.writer, NewResponse(req.ID, result))
+		return t.write(NewResponse(req.ID, result))
 	}
 }
 ```
@@ -622,7 +643,7 @@ const (
 
 # `initialize` Handler
 
-```go
+```go {|2|3,15|4-7|8-14|16-20}
 func main() {
 	p := protocol.New(os.Stdin, os.Stdout)
 	p.HandleMethod("initialize", func(params json.RawMessage) (result any, err error) {
@@ -650,7 +671,7 @@ func main() {
 
 # `initialized` notification handler
 
-```go
+```go {|1|2-12}
 p.HandleNotification("initialized", func(params json.RawMessage) (err error) {
 	go func() {
 		count := 1
@@ -671,26 +692,25 @@ p.HandleNotification("initialized", func(params json.RawMessage) (err error) {
 
 # Sending notifications to the text editor
 
-```go
-type Notification struct {
-	ProtocolVersion string `json:"jsonrpc"`
-	Method          string `json:"method"`
-	Params          any    `json:"params"`
+```go {|3|6-10|11-}
+type Transport struct {
+	// ...
+	writeLock            *sync.Mutex
 }
 
-func (n Notification) IsJSONRPC() bool {
-	return n.ProtocolVersion == "2.0"
+func (t *Transport) write(msg Message) (err error) {
+	t.writeLock.Lock()
+	defer t.writeLock.Unlock()
+	return Write(t.writer, msg)
 }
-```
 
-```go
 func (t *Transport) Notify(method string, params any) (err error) {
 	n := Notification{
 		ProtocolVersion: "2.0",
 		Method:          method,
 		Params:          params,
 	}
-	return Write(t.writer, n)
+	return t.write(n)
 }
 ```
 
@@ -750,9 +770,90 @@ nvim --clean -u ./neovim-config/init.lua pizza.cook
 
 ---
 
-# Visual Studio Code
+# Visual Studio Code - `extension.ts`
 
-* Build a Language Server Extension, using TypeScript
+```typescript {|7|8|11|13-14}
+import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from "vscode-languageclient/node";
+
+let client: LanguageClient;
+
+export function activate(context: vscode.ExtensionContext) {
+  const serverOptions: ServerOptions = {
+	command: "examplelsp",
+	transport: TransportKind.stdio,
+  };
+  const clientOptions: LanguageClientOptions = {
+    documentSelector: [{ scheme: "file", language: "cook" }],
+  };
+  client = new LanguageClient("cook", "cook", serverOptions, clientOptions);
+  client.start();
+}
+
+export function deactivate(): Thenable<void> | undefined {
+  if (!client) { return undefined; }
+  return client.stop();
+}
+```
+
+---
+
+# Visual Studio Code - `package.json`
+
+```json {|4-7|9-15|17-19}
+{
+  "name": "vscode-cooklang",
+  // ...
+  "activationEvents": [
+    "workspaceContains:**/*.cook",
+    "onLanguage:cook"
+  ],
+  // ...
+  "contributes": {
+    "languages": [{
+      "id": "cook",
+      "aliases": ["cook"],
+      "extensions": [".cook", ".cooklang"]
+    }]
+  },
+  // ...
+  "dependencies": {
+    "vscode-languageclient": "^8.1.0"
+  }
+}
+```
+
+---
+
+# Visual Studio Code - debugging
+
+<img src="vscode.gif"/>
+
+---
+
+# JetBrains IDEs
+
+* Build a JetBrains Plugin, using Java
+* https://blog.jetbrains.com/platform/2023/07/lsp-for-plugin-developers/
+
+<br>
+
+```java
+import com.intellij.platform.lsp.api.LspServerSupportProvider
+import com.intellij.platform.lsp.api.ProjectWideLspServerDescriptor
+
+class FooLspServerSupportProvider : LspServerSupportProvider {
+   override fun fileOpened(project: Project, file: VirtualFile, serverStarter: LspServerStarter) {
+       if (file.extension == "foo") {
+           serverStarter.ensureServerStarted(FooLspServerDescriptor(project))
+       }
+   }
+}
+
+private class FooLspServerDescriptor(project: Project) : ProjectWideLspServerDescriptor(project, "Foo") {
+   override fun isSupportedFile(file: VirtualFile) = file.extension == "foo"
+   override fun createCommandLine() = GeneralCommandLine("foo", "--stdio")
+}
+```
 
 ---
 layout: section
@@ -778,8 +879,93 @@ Place @bacon strips{1%kg} on a baking sheet.
 ## Interpreting
 
 * `@salt` - an ingredient with no quantity and no space in the name
-* `@ground black pepper` - an ingredient with no quantity spaces in the name
+* `@ground black pepper{}` - an ingredient with no quantity, but with spaces in the name
 * `@bacon strips{1%kg}` - an ingredient with quantity `1` and unit `kg`
+* `#food processor{}` - required equipment
+* `~{4%minutes}` - time to do so something
+
+---
+
+# Parsing
+
+### https://github.com/aquilax/cooklang-go
+
+<br>
+
+```go
+recipie, err := cooklang.ParseString(text)
+if err != nil {
+	//TODO: Return a parse error diagnostic.
+}
+for _, step := range recipe.Steps {
+	for _, ingredient := range step.Ingredients {
+		if ingredient.Amount.Unit == "cup" {
+			//TODO: Return an American measurement diagnostic.
+		}
+	}
+}
+```
+
+---
+
+# cooklang-go internals
+
+```go {|11}
+func ParseStream(s io.Reader) (*Recipe, error) {
+	// ...
+	var line string
+	lineNumber := 0
+	for scanner.Scan() {
+		lineNumber++
+		line = scanner.Text()
+		if strings.TrimSpace(line) != "" {
+			err := parseLine(line, &recipe)
+			if err != nil {
+				return nil, fmt.Errorf("line %d: %w", lineNumber, err)
+			}
+		}
+	}
+	return &recipe, nil
+}
+```
+
+---
+
+# Better error for LSP
+
+```go
+type Range struct {
+	Start, End Position
+}
+
+type Position struct {
+	Line, Character int
+}
+
+type Error struct {
+	Range   *Range
+	Message string
+}
+
+func (e Error) Error() string {
+	if e.Range != nil {
+	  return fmt.Sprintf("error at %v: %s", e.Range, e.Message)
+	}
+	return e.Message
+}
+```
+
+---
+
+# Better item for LSP
+
+```go {|4}
+type Ingredient struct {
+	Name   string           // name of the ingredient
+	Amount IngredientAmount // optional ingredient amount (default: 1)
+	Range  Range
+}
+```
 
 ---
 
@@ -794,40 +980,239 @@ sequenceDiagram
 
 ---
 
-# Adding new feature
+# `textDocument/didOpen`
+
+```json
+Content-Length: 320\r\n
+\r\n
+{
+  "jsonrpc": "2.0",
+  "method": "textDocument/didOpen",
+  "params": {
+    "textDocument": {
+      "text": "the full text of the document you just opened",
+      "version": 0,
+      "languageId": "cook",
+      "uri": "file:///Users/adrian/github.com/a-h/examplelsp/example-project/pizza.cook"
+    }
+  }
+}
+```
+
+---
+
+# Handling edits to an opened file
+
+```mermaid
+sequenceDiagram
+	Editor->>LSP: send `textDocument/didChange` notification
+	LSP->>LSP: parse updated document and find errors
+	LSP-->>Editor: send `textDocument/publishDiagnostics` notification
+```
+
+---
+
+# `textDocument/didChange`
+
+```json {|10-14}
+{
+  "jsonrpc": "2.0",
+  "id": null,
+  "method": "textDocument/didChange",
+  "params": {
+    "textDocument": {
+      "uri": "file:///Users/adrian/github.com/a-h/examplelsp/example-project/pizza.cook",
+      "version": 7
+    },
+    "contentChanges": [
+      {
+        "text": "Because we told the client we need the whole document, we get it every time..."
+      }
+    ]
+  }
+}
+```
+
+---
+
+# Start a document update processor
+
+```go {|2,14|3,13|5-7|8-12}
+documentUpdates := make(chan messages.TextDocumentItem, 10)
+go func() {
+	for doc := range documentUpdates {
+		diagnostics := []messages.Diagnostic{}
+		diagnostics = append(diagnostics, getRecipeParseErrorDiagnostics(doc.Text)...)
+		diagnostics = append(diagnostics, getAmericanMeasurementsDiagnostics(doc.Text)...)
+		diagnostics = append(diagnostics, getSwearwordDiagnostics(doc.Text)...)
+		p.Notify(messages.PublishDiagnosticsMethod, messages.PublishDiagnosticsParams{
+			URI:         doc.URI,
+			Version:     &doc.Version,
+			Diagnostics: diagnostics,
+		})
+	}
+}()
+```
+
+---
+
+# Push updates into the process queue
 
 ```go
 p.HandleNotification(messages.DidOpenTextDocumentNotification, func(rawParams json.RawMessage) (err error) {
-	log.Info("received didOpenTextDocument notification", slog.Any("params", rawParams))
-	var params messages.DidOpenTextDocumentParams
-	if err = json.Unmarshal(rawParams, &params); err != nil {
+	// ... parse params
+	documentUpdates <- params.TextDocument
+	return nil
+})
+
+
+p.HandleNotification(messages.DidChangeTextDocumentNotification, func(rawParams json.RawMessage) (err error) {
+	// ... parse params
+	documentUpdates <- messages.TextDocumentItem{
+		URI:     params.TextDocument.URI,
+		Version: params.TextDocument.Version,
+		Text:    params.ContentChanges[0].Text,
+	}
+	return nil
+})
+```
+
+
+---
+
+# `getRecipeParseErrorDiagnostics`
+
+```go
+var lineRegexp = regexp.MustCompile(`^line (\d+):`)
+
+func getRecipeParseErrorDiagnostics(text string) (diagnostics []messages.Diagnostic) {
+	_, err := cooklang.ParseString(text)
+	if err == nil || !lineRegexp.MatchString(err.Error()) {
 		return
 	}
-
-	diagnostics := []messages.Diagnostic{}
-	diagnostics = append(diagnostics, getRecipeParseErrorDiagnostics(params.Text)...)
-	diagnostics = append(diagnostics, getAmericanMeasurementsDiagnostics(params.Text)...)
-	diagnostics = append(diagnostics, getSwearwordDiagnostics(params.Text)...)
-
-	return p.Notify(messages.PublishDiagnosticsMethod, messages.PublishDiagnosticsParams{
-		URI:         params.URI,
-		Version:     &params.Version,
-		Diagnostics: diagnostics,
+	line, _ := strconv.ParseInt(lineRegexp.FindStringSubmatch(err.Error())[1], 10, 64)
+	line-- // LSP positions are zero based.
+	diagnostics = append(diagnostics, messages.Diagnostic{
+		Range: messages.Range{
+			Start: messages.NewPosition(int(line), 0),
+			End: messages.NewPosition(int(line), getLineLength(text, line)),
+		},
+		Severity: ptr(messages.DiagnosticSeverityError),
+		Source:   ptr("examplelsp"),
+		Message:  strings.SplitN(err.Error(), ":", 2)[1],
 	})
+	return
+}
+```
+
+---
+
+# `getSwearwordDiagnostics`
+
+```go
+func getSwearwordDiagnostics(text string) (diagnostics []messages.Diagnostic) {
+	swearWordRanges := findSwearWords(text)
+	for _, r := range swearWordRanges {
+		diagnostics = append(diagnostics, messages.Diagnostic{
+			Range:    r,
+			Severity: ptr(messages.DiagnosticSeverityWarning),
+			Source:   ptr("examplelsp"),
+			Message:  "Mild swearword",
+		})
+	}
+	return
+}
+```
+
+---
+
+# Summary
+
+* It's possible to make an LSP for anything that has a Go parser.
+* Parsing into an object model makes it possible to analyse the object model to enable linting.
+* Having file positions of in the object model makes it easier to provide diagnostics.
+* You don't need parsing to succeed to to produce some diagnostics.
+
+---
+layout: section
+---
+
+# Adding autocomplete
+
+---
+
+# Autocomplete
+
+```mermaid
+sequenceDiagram
+	Editor->>+LSP: send `textDocument/completion` request
+	LSP->>-Editor: Return `CompletionResult`
+```
+
+---
+
+# Tell the LSP client that we support completion
+
+```go {|6-8}
+p.HandleMethod("initialize", func(params json.RawMessage) (result any, err error) {
+	// ... parse params etc.
+	result = messages.InitializeResult{
+		Capabilities: messages.ServerCapabilities{
+			TextDocumentSync: messages.TextDocumentSyncKindFull,
+			CompletionProvider: &messages.CompletionOptions{
+				TriggerCharacters: []string{"%"},
+			},
+		},
+		ServerInfo: &messages.ServerInfo{
+			Name: "examplelsp",
+		},
+	}
+	return
 })
 ```
 
 ---
 
-# Editing an opened file
+# Handle `textDocument/completion`
 
-```mermaid
-sequenceDiagram
-		Editor->>LSP: send `textDocument/didChange` notification
-		LSP-->>Editor: send `textDocument/publishDiagnostics` notification
+```go
+p.HandleMethod(messages.CompletionRequestMethod, func(rawParams json.RawMessage) (result any, err error) {
+	var params messages.CompletionParams
+	if err = json.Unmarshal(rawParams, &params); err != nil {
+		return
+	}
+
+	doc, err := cooklang.ParseString(fileURIToContents[params.TextDocument.URI])
+	if err != nil {
+		return []messages.CompletionItem{}, nil
+	}
+	var r []messages.CompletionItem
+	for _, step := range doc.Steps {
+		for _, ingredient := range step.Ingredients {
+			if positionIsInRange(ingredient.Range, params.Position) {
+				r = append(r, ingredientUnitCompletionItems...)
+			}
+		}
+	}
+	return r, nil
+})
 ```
 
 ---
+
+# Trigger autocomplete with `Ctrl-X, Ctrl-O` in Neovim
+
+* Neovim requires a plugin like `nvim-cmp` to display suggestions as you type
+
+<br>
+
+<img src="ctrlx_ctrlo.gif"/>
+
+---
+
+# Or use the VS Code plugin
+
+<img src="lb_to_kg.gif"/>
 
 <!--
 
