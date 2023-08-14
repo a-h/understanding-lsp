@@ -750,12 +750,71 @@ nvim --clean -u ./neovim-config/init.lua pizza.cook
 
 ---
 
+# Visual Studio Code
+
+* Build a Language Server Extension, using TypeScript
+
+---
+layout: section
+---
+
+# Build an LSP for cooklang
+
+---
+
+# cooklang
+
+## Recipe
+
+```
+Then add @salt and @ground black pepper{} to taste.
+
+Place @bacon strips{1%kg} on a baking sheet.
+```
+
+<br>
+<br>
+
+## Interpreting
+
+* `@salt` - an ingredient with no quantity and no space in the name
+* `@ground black pepper` - an ingredient with no quantity spaces in the name
+* `@bacon strips{1%kg}` - an ingredient with quantity `1` and unit `kg`
+
+---
+
 # Opening a file
 
 ```mermaid
 sequenceDiagram
 	Editor->>LSP: send `textDocument/didOpen` notification
+	LSP->>LSP: parse document and find errors
 	LSP-->>Editor: send `textDocument/publishDiagnostics` notification
+```
+
+---
+
+# Adding new feature
+
+```go
+p.HandleNotification(messages.DidOpenTextDocumentNotification, func(rawParams json.RawMessage) (err error) {
+	log.Info("received didOpenTextDocument notification", slog.Any("params", rawParams))
+	var params messages.DidOpenTextDocumentParams
+	if err = json.Unmarshal(rawParams, &params); err != nil {
+		return
+	}
+
+	diagnostics := []messages.Diagnostic{}
+	diagnostics = append(diagnostics, getRecipeParseErrorDiagnostics(params.Text)...)
+	diagnostics = append(diagnostics, getAmericanMeasurementsDiagnostics(params.Text)...)
+	diagnostics = append(diagnostics, getSwearwordDiagnostics(params.Text)...)
+
+	return p.Notify(messages.PublishDiagnosticsMethod, messages.PublishDiagnosticsParams{
+		URI:         params.URI,
+		Version:     &params.Version,
+		Diagnostics: diagnostics,
+	})
+})
 ```
 
 ---
