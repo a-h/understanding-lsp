@@ -57,10 +57,6 @@ flowchart LR
 ```
 
 ---
-
-<img src="lsp.jpg"/>
-
----
 layout: section
 ---
 
@@ -158,7 +154,7 @@ layout: section
 
 ---
 
-# LSP clients can send requests that expect a response
+# Editors can send requests that require a response
 
 ```mermaid
 sequenceDiagram
@@ -446,7 +442,7 @@ layout: section
 type NotificationHandler func(params json.RawMessage) (err error)
 type MethodHandler func(params json.RawMessage) (result any, err error)
 
-type Transport struct {
+type Mux struct {
 	reader               *bufio.Reader
 	writer               *bufio.Writer
 	notificationHandlers map[string]NotificationHandler
@@ -454,12 +450,39 @@ type Transport struct {
 	writeLock            *sync.Mutex
 }
 
-func (t *Transport) HandleMethod(name string, method MethodHandler) {
-	t.methodHandlers[name] = method
+func (m *Mux) HandleMethod(name string, method MethodHandler) {
+	m.methodHandlers[name] = method
 }
 
-func (t *Transport) HandleNotification(name string, notification NotificationHandler) {
-	t.notificationHandlers[name] = notification
+func (m *Mux) HandleNotification(name string, notification NotificationHandler) {
+	m.notificationHandlers[name] = notification
+}
+
+```
+
+---
+
+# Send notifications to the text editor
+
+```go {|3|6-10|11-}
+type Mux struct {
+	// ...
+	writeLock *sync.Mutex
+}
+
+func (m *Mux) write(msg Message) (err error) {
+	m.writeLock.Lock()
+	defer m.writeLock.Unlock()
+	return Write(m.writer, msg)
+}
+
+func (m *Mux) Notify(method string, params any) (err error) {
+	n := Notification{
+		ProtocolVersion: "2.0",
+		Method:          method,
+		Params:          params,
+	}
+	return m.write(n)
 }
 ```
 
@@ -468,26 +491,27 @@ func (t *Transport) HandleNotification(name string, notification NotificationHan
 # Process messages
 
 ```go {|2|4|5-7|9|10-12|13-17}
-func (t *Transport) Process() (err error) {
-	req, err := Read(t.reader)
+func (m *Mux) Process() (err error) {
+	req, err := Read(m.reader)
 	if err != nil { return err }
 	if req.IsNotification() {
-		if nh, ok := t.notificationHandlers[req.Method]; ok {
+		if nh, ok := m.notificationHandlers[req.Method]; ok {
 			return nh(req.Params)
 		}
 	} else {
-		mh, ok := t.methodHandlers[req.Method]
+		mh, ok := m.methodHandlers[req.Method]
 		if !ok {
-			return t.write(NewResponseError(req.ID, ErrMethodNotFound))
+			return m.write(NewResponseError(req.ID, ErrMethodNotFound))
 		}
 		result, err := mh(req.Params)
 		if err != nil {
-			return t.write(NewResponseError(req.ID, err))
+			return m.write(NewResponseError(req.ID, err))
 		}
-		return t.write(NewResponse(req.ID, result))
+		return m.write(NewResponse(req.ID, result))
 	}
 }
 ```
+
 
 ---
 layout: section
@@ -504,7 +528,7 @@ layout: section
 * Mesages can be requests/responses correlated by ID, or notifications which don't need a response
 * The text editor doesn't need to wait for a response to a request to send additional requests
 * The LSP _or_ text editor can send notifications, such as `textDocument/didOpen` or `textDocument/publishDiagnostics`
-* Our new `Transport` type can be used to register notification and request/response handler functions
+* Our new `Mux` type can be used to register notification and request/response handler functions
 
 ---
 layout: section
@@ -671,13 +695,23 @@ func main() {
 
 # `initialized` notification handler
 
-```go {|1|2-12}
+```go
+p.HandleNotification("initialized", func(params json.RawMessage) (err error) {
+	// Do something interesting.
+})
+```
+
+---
+
+# "Hello, World"
+
+```go {2-12}
 p.HandleNotification("initialized", func(params json.RawMessage) (err error) {
 	go func() {
 		count := 1
 		for {
 			time.Sleep(time.Second * 1)
-			p.Notify(messages.ShowMessageMethod, messages.ShowMessageParams{
+			p.Notify("window/showMessage", messages.ShowMessageParams{
 				Type:    messages.MessageTypeInfo,
 				Message: fmt.Sprintf("Shown %d messages", count),
 			})
@@ -686,32 +720,6 @@ p.HandleNotification("initialized", func(params json.RawMessage) (err error) {
 	}()
 	return nil
 })
-```
-
----
-
-# Sending notifications to the text editor
-
-```go {|3|6-10|11-}
-type Transport struct {
-	// ...
-	writeLock            *sync.Mutex
-}
-
-func (t *Transport) write(msg Message) (err error) {
-	t.writeLock.Lock()
-	defer t.writeLock.Unlock()
-	return Write(t.writer, msg)
-}
-
-func (t *Transport) Notify(method string, params any) (err error) {
-	n := Notification{
-		ProtocolVersion: "2.0",
-		Method:          method,
-		Params:          params,
-	}
-	return t.write(n)
-}
 ```
 
 ---
@@ -729,17 +737,17 @@ layout: section
 * After the `initialize` request/response, the text editor sends an `initialized` notification.
 * Before using a capability, the LSP _should_ check to see if the text editor supports it.
 * The LSP can start sending notifications to the client with the `Notify` method.
-* The most basic LSP could simply remind you to take a break by sending you a notification.
+* Sending a `window/showMessage` notification is the "Hello, World" of LSP.
 
 ---
 layout: section
 ---
 
-# Using our new LSP
+# Running our LSP in an editor
 
 ---
 
-# Using our new LSP - Neovim
+# Neovim
 
 ## init.lua
 
@@ -892,8 +900,8 @@ Place @bacon strips{1%kg} on a baking sheet.
 
 <br>
 
-```go
-recipie, err := cooklang.ParseString(text)
+```go {|5-11}
+recipe, err := cooklang.ParseString(text)
 if err != nil {
 	//TODO: Return a parse error diagnostic.
 }
@@ -963,7 +971,7 @@ func (e Error) Error() string {
 type Ingredient struct {
 	Name   string           // name of the ingredient
 	Amount IngredientAmount // optional ingredient amount (default: 1)
-	Range  Range
+	Range  Range            // position of the ingredient in the recipe
 }
 ```
 
@@ -1082,24 +1090,24 @@ p.HandleNotification(messages.DidChangeTextDocumentNotification, func(rawParams 
 
 # `getRecipeParseErrorDiagnostics`
 
-```go
-var lineRegexp = regexp.MustCompile(`^line (\d+):`)
-
+```go {|1-4|5-8|9-17}
 func getRecipeParseErrorDiagnostics(text string) (diagnostics []messages.Diagnostic) {
 	_, err := cooklang.ParseString(text)
-	if err == nil || !lineRegexp.MatchString(err.Error()) {
+	if err == nil {
 		return
 	}
-	line, _ := strconv.ParseInt(lineRegexp.FindStringSubmatch(err.Error())[1], 10, 64)
-	line-- // LSP positions are zero based.
+	cerr, isCooklangError := err.(*cooklang.Error)
+	if !isCooklangError {
+		return
+	}
 	diagnostics = append(diagnostics, messages.Diagnostic{
 		Range: messages.Range{
-			Start: messages.NewPosition(int(line), 0),
-			End: messages.NewPosition(int(line), getLineLength(text, line)),
+			Start: messages.NewPosition(cerr.Range.Start.Line, cerr.Range.Start.Character),
+			End:   messages.NewPosition(cerr.Range.End.Line, cerr.Range.End.Character),
 		},
 		Severity: ptr(messages.DiagnosticSeverityError),
 		Source:   ptr("examplelsp"),
-		Message:  strings.SplitN(err.Error(), ":", 2)[1],
+		Message:  cerr.Message,
 	})
 	return
 }
@@ -1126,6 +1134,18 @@ func getSwearwordDiagnostics(text string) (diagnostics []messages.Diagnostic) {
 
 ---
 
+# Block comments
+
+<img src="block_comment.gif"/>
+
+---
+
+# Timer syntax
+
+<img src="timer_syntax.gif"/>
+
+---
+
 # Summary
 
 * It's possible to make an LSP for anything that has a Go parser.
@@ -1146,7 +1166,7 @@ layout: section
 ```mermaid
 sequenceDiagram
 	Editor->>+LSP: send `textDocument/completion` request
-	LSP->>-Editor: Return `CompletionResult`
+	LSP->>-Editor: return `CompletionResult`
 ```
 
 ---
@@ -1170,12 +1190,33 @@ p.HandleMethod("initialize", func(params json.RawMessage) (result any, err error
 	return
 })
 ```
+---
+
+# Update change handling to cache current text
+
+```go {|4}
+documentUpdates := make(chan messages.TextDocumentItem, 10)
+go func() {
+	for doc := range documentUpdates {
+		fileURIToContents[doc.URI] = doc.Text
+		diagnostics := []messages.Diagnostic{}
+		diagnostics = append(diagnostics, getRecipeParseErrorDiagnostics(doc.Text)...)
+		diagnostics = append(diagnostics, getAmericanMeasurementsDiagnostics(doc.Text)...)
+		diagnostics = append(diagnostics, getSwearwordDiagnostics(doc.Text)...)
+		m.Notify(messages.PublishDiagnosticsMethod, messages.PublishDiagnosticsParams{
+			URI:         doc.URI,
+			Version:     &doc.Version,
+			Diagnostics: diagnostics,
+		})
+	}
+}()
+```
 
 ---
 
 # Handle `textDocument/completion`
 
-```go
+```go {|2-5|6-10|11-19}
 p.HandleMethod(messages.CompletionRequestMethod, func(rawParams json.RawMessage) (result any, err error) {
 	var params messages.CompletionParams
 	if err = json.Unmarshal(rawParams, &params); err != nil {
@@ -1213,6 +1254,78 @@ p.HandleMethod(messages.CompletionRequestMethod, func(rawParams json.RawMessage)
 # Or use the VS Code plugin
 
 <img src="lb_to_kg.gif"/>
+
+---
+layout: section
+---
+
+# Debugging and troubleshooting
+
+---
+
+# Log to a file
+
+```go
+lf, err := os.Create("examplelsp.log")
+if err != nil {
+	slog.Error("failed to create log output file", slog.Any("error", err))
+	os.Exit(1)
+}
+defer lf.Close()
+log := slog.New(slog.NewJSONHandler(lf, nil))
+```
+
+<br>
+
+```go
+m.HandleMethod(messages.CompletionRequestMethod, func(rawParams json.RawMessage) (result any, err error) {
+	log.Debug("received completion request", slog.Any("params", rawParams))
+	// ...
+}
+```
+
+---
+
+# Run a web server
+
+<img src="templ.gif"/>
+
+---
+
+# templ uses gopls
+
+```mermaid
+flowchart LR
+    editor --> templ[templ lsp]
+    templ --> sm[templ to location map]
+    sm --> templ
+    templ --> gopls
+```
+
+---
+
+# The web server lets you visualise it
+
+<img src="templ_web.png"/>
+
+---
+layout: section
+---
+
+# Summary
+
+---
+
+# Projects to look at
+
+* https://github.com/a-h/examplelsp
+  * The cooklang example LSP
+* https://github.com/a-h/understandinglsp
+  * Slides for this talk
+* https://github.com/a-h/templ
+  * Contains the LSP for the templ language
+* https://lsp.dev/
+  * Go struct definitions and tools for building LSPs
 
 <!--
 
