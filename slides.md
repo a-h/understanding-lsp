@@ -10,11 +10,32 @@ title: Understanding Language Server Protocol
 
 ---
 
-# Language Server Protocol (LSP)
+# Topics
+
+* What is LSP?
+* LSP message formats
+* Initialization handshake
+* Request/response handling
+* Notification handling
+* Using your LSP in an editor
+* Debugging
+
+---
+layout: two-cols
+---
+
+# Language Server Protocol
+## LSP
+
+<br>
 
 > ... defines the protocol used between an editor or IDE and a language server that provides language features like auto complete, go to definition, find all references etc.
 
 https://microsoft.github.io/language-server-protocol/
+
+::right::
+
+<img src="spec.png" width="400"/>
 
 ---
 
@@ -488,6 +509,28 @@ func (m *Mux) Notify(method string, params any) (err error) {
 
 ---
 
+# What might happen without a mutex?
+
+```mermaid
+flowchart LR
+    na["{ &quot;key&quot;: &quot;value a&quot; }"] --> stdout;
+    nb["{ &quot;key&quot;: &quot;value b&quot; }"] --> stdout;
+    stdout --> p["{ { &quot;&quot;key&quot;: &quot;key&quot;:v &quot;avlue b&quot; }alue a&quot; }"]
+```
+
+---
+
+# With a mutex?
+
+```mermaid
+flowchart LR
+    na["{ &quot;key&quot;: &quot;value a&quot; }"] --> stdout;
+    nb["{ &quot;key&quot;: &quot;value b&quot; }"] --> stdout;
+    stdout --> p["{ &quot;key&quot;: &quot;value a&quot; }{ &quot;key&quot;: &quot;value b&quot; }"]
+```
+
+---
+
 # Process messages
 
 ```go {|2|4|5-7|9|10-12|13-17}
@@ -669,8 +712,8 @@ const (
 
 ```go {|2|3,15|4-7|8-14|16-20}
 func main() {
-	p := protocol.New(os.Stdin, os.Stdout)
-	p.HandleMethod("initialize", func(params json.RawMessage) (result any, err error) {
+	m := lsp.NewMux(os.Stdin, os.Stdout)
+	m.HandleMethod("initialize", func(params json.RawMessage) (result any, err error) {
 		var initializeParams messages.InitializeParams
 		if err = json.Unmarshal(params, &initializeParams); err != nil {
 			return result, err
@@ -684,7 +727,7 @@ func main() {
 		return result, err
 	})
 	for {
-		if err := p.Process(); err != nil {
+		if err := m.Process(); err != nil {
 			return
 		}
 	}
@@ -696,7 +739,7 @@ func main() {
 # `initialized` notification handler
 
 ```go
-p.HandleNotification("initialized", func(params json.RawMessage) (err error) {
+m.HandleNotification("initialized", func(params json.RawMessage) (err error) {
 	// Do something interesting.
 })
 ```
@@ -706,12 +749,12 @@ p.HandleNotification("initialized", func(params json.RawMessage) (err error) {
 # "Hello, World"
 
 ```go {2-12}
-p.HandleNotification("initialized", func(params json.RawMessage) (err error) {
+m.HandleNotification("initialized", func(params json.RawMessage) (err error) {
 	go func() {
 		count := 1
 		for {
 			time.Sleep(time.Second * 1)
-			p.Notify("window/showMessage", messages.ShowMessageParams{
+			m.Notify("window/showMessage", messages.ShowMessageParams{
 				Type:    messages.MessageTypeInfo,
 				Message: fmt.Sprintf("Shown %d messages", count),
 			})
@@ -1320,7 +1363,7 @@ layout: section
 
 * https://github.com/a-h/examplelsp
   * The cooklang example LSP
-* https://github.com/a-h/understandinglsp
+* https://github.com/a-h/understanding-lsp
   * Slides for this talk
 * https://github.com/a-h/templ
   * Contains the LSP for the templ language
