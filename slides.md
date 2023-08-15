@@ -1352,14 +1352,24 @@ flowchart LR
 <img src="templ_web.png"/>
 
 ---
-layout: section
----
 
 # Summary
 
+* What is Language Server Protocol?
+* LSP message formats
+* Initialization handshake
+* Request/response handling
+* Notification handling
+* Using your LSP in an editor
+* Debugging
+
+---
+layout: two-cols-header
 ---
 
-# Projects to look at
+# Further reading
+
+::left::
 
 * https://github.com/a-h/examplelsp
   * The cooklang example LSP
@@ -1369,6 +1379,10 @@ layout: section
   * Contains the LSP for the templ language
 * https://lsp.dev/
   * Go struct definitions and tools for building LSPs
+
+::right::
+
+@ me on X - @adrianhesketh
 
 <!--
 
