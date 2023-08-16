@@ -1302,7 +1302,7 @@ p.HandleMethod(messages.CompletionRequestMethod, func(rawParams json.RawMessage)
 layout: section
 ---
 
-# Debugging and troubleshooting
+# Logging
 
 ---
 
@@ -1320,7 +1320,7 @@ log := slog.New(slog.NewJSONHandler(lf, nil))
 
 <br>
 
-```go
+```go {|2}
 m.HandleMethod(messages.CompletionRequestMethod, func(rawParams json.RawMessage) (result any, err error) {
 	log.Debug("received completion request", slog.Any("params", rawParams))
 	// ...
@@ -1328,26 +1328,238 @@ m.HandleMethod(messages.CompletionRequestMethod, func(rawParams json.RawMessage)
 ```
 
 ---
+layout: section
+---
 
-# Run a web server
+# The templ templating language
 
-<img src="templ.gif"/>
+---
+layout: two-cols-header
+---
+
+# templ
+
+::left::
+
+* Started in 2021
+* Looking for alternatives to JSX
+* Designed to:
+  * Be strongly typed
+  * Compiled
+  * Support LSP implementation
+  * Be easy to learn
+  * Use standard Go syntax where possible
+  * Use Go functions in-line
+* Used in production at a major insurer to generate insurance PDFs
+
+::right::
+
+<img src="star-history.png"/>
+
+---
+
+# Why bother? Go has templates!
+
+```html
+<div>
+    {{ .Count }} items are made of 
+    {{ .Material | toUpper }} 
+    and cost {{ .Price }}
+</div>
+```
+
+```go
+type Inventory struct {
+	Material string
+	Count    uint
+}
+
+//go:embed templates/example.gohtml
+var exampleTemplateText string
+var tmpl = template.Must(template.New("example").Parse(exampleTemplateText))
+
+func main() {
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		err := tmpl.Execute(w, Inventory{"paper", 100})
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to execute template: %v", err), http.StatusInternalServerError)
+		}
+	})
+	http.ListenAndServe(":7777", nil)
+}
+```
+
+---
+
+# Fails on program startup
+
+```html {3}
+<div>
+    {{ .Count }} items are made of 
+    {{ .Material | toUpper }} 
+    and cost {{ .Price }}
+</div>
+```
+
+```go {8}
+type Inventory struct {
+	Material string
+	Count    uint
+}
+
+//go:embed templates/example.gohtml
+var exampleTemplateText string
+var tmpl = template.Must(template.New("example").Parse(exampleTemplateText))
+
+func main() {
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		err := tmpl.Execute(w, Inventory{"paper", 100})
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to execute template: %v", err), http.StatusInternalServerError)
+		}
+	})
+	http.ListenAndServe(":7777", nil)
+}
+```
+
+---
+
+# Fails when the handler is hit
+
+```html {4}
+<div>
+    {{ .Count }} items are made of 
+    {{ .Material | toUpper }} 
+    and cost {{ .Price }}
+</div>
+```
+
+```go {12-15}
+type Inventory struct {
+	Material string
+	Count    uint
+}
+
+//go:embed templates/example.gohtml
+var exampleTemplateText string
+var tmpl = template.Must(template.New("example").Parse(exampleTemplateText))
+
+func main() {
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		err := tmpl.Execute(w, Inventory{"paper", 100})
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to execute template: %v", err), http.StatusInternalServerError)
+		}
+	})
+	http.ListenAndServe(":7777", nil)
+}
+```
+
+---
+
+# Shorter feedback loop
+
+```mermaid
+flowchart RL
+	runtime[run time] -->|more expensive| start[program start] --> test --> compile -->|less expensive| edit
+```
+
+---
+
+# `example.templ`
+
+```go {|3|4|3-5,9|11-13}
+package main
+
+templ Hello(name string) {
+  <div>Hello, { name }</div>
+}
+
+templ Greeting(person Person) {
+  <div class="greeting">
+    @Hello(person.Name)
+  </div>
+  if person.Age == 42 {
+    <div>Knows the meaning of life, the universe, and everything</div>
+  }
+}
+```
+
+---
+
+# templ CLI
+
+```sh
+templ generate
+```
+
+```
+example.templ complete in 8.288708ms
+Generated code for 1 templates with 0 errors in 8.624625ms
+```
+
+---
+
+# Generated `example_templ.go` file
+
+```go
+func Hello(name string) templ.Component {
+	return templ.ComponentFunc(func(ctx context.Context, w io.Writer) (err error) {
+		// ...
+		_, err = templBuffer.WriteString("<div>")
+		// ...
+		var_2 := `Hello, `
+		_, err = templBuffer.WriteString(var_2)
+		// ...
+		var var_3 string = name
+		_, err = templBuffer.WriteString(templ.EscapeString(var_3))
+		// ...
+		_, err = templBuffer.WriteString("</div>")
+		// ...
+		return err
+	})
+}
+```
+---
+
+# templ VS Code Extension &amp; LSP
+
+<img src="templ_error.png"/>
+
+---
+
+# Compile errors
+
+```
+go build
+# github.com/a-h/examplelsp/templtemplates
+./example_templ.go:67:22: person.LastName undefined (type Person has no field or method LastName)
+```
 
 ---
 
 # templ uses gopls
 
 ```mermaid
-flowchart LR
-    editor --> templ[templ lsp]
-    templ --> sm[templ to location map]
-    sm --> templ
-    templ --> gopls
+sequenceDiagram
+    participant editor as Editor
+    participant templ as templ lsp
+    participant parser as templ parser
+    participant generator as templ generate
+    participant gopls as gopls
+    editor->>+templ: open file
+    templ->>+parser: parse
+    parser->>-templ: object model
+    templ->>+generator: object model
+    generator->>-templ: go code & file position mapping
+    templ->>+gopls: go code
+    gopls->>-templ: diagnostics with go code positions
+    templ->>-editor: diagnostics wth templ code positions
 ```
 
 ---
 
-# The web server lets you visualise it
+# The LSP can start a web server to let you visualise it
 
 <img src="templ_web.png"/>
 
