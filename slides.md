@@ -6,7 +6,9 @@ lineNumbers: false
 title: Understanding Language Server Protocol
 ---
 
-# Understanding Language Server Protocol - autocomplete, formatting
+# Understanding Language Server Protocol
+
+## Adrian Hesketh
 
 ---
 
@@ -18,7 +20,9 @@ title: Understanding Language Server Protocol
 * Request/response handling
 * Notification handling
 * Using your LSP in an editor
-* Debugging
+* Logging
+* The templ language
+* Parsing
 
 ---
 layout: two-cols
@@ -384,7 +388,7 @@ interface ResponseError {
 
 ---
 
-# In Go, TypeScript unions are reduced to `any`
+# In Go, these TypeScript unions are reduced to `any`
 
 ```go {|4,13}
 type Response struct {
@@ -453,11 +457,11 @@ func Write(w *bufio.Writer, msg Message) (err error) {
 layout: section
 ---
 
-# Joining it all together
+# Creating a Mux
 
 ---
 
-# Define handlers
+# Map method names to handlers
 
 ```go {|5-6|1-2|1|2|7-8,12-18}
 type NotificationHandler func(params json.RawMessage) (err error)
@@ -483,7 +487,7 @@ func (m *Mux) HandleNotification(name string, notification NotificationHandler) 
 
 ---
 
-# Send notifications to the text editor
+# Enable sending notifications to the text editor
 
 ```go {|3|6-10|11-}
 type Mux struct {
@@ -552,6 +556,36 @@ func (m *Mux) Process() (err error) {
 		}
 		return m.write(NewResponse(req.ID, result))
 	}
+}
+```
+
+---
+
+# Process messages
+
+```go {4,22}
+func (m *Mux) Process() (err error) {
+	req, err := Read(m.reader)
+	if err != nil { return err }
+	go func(req lsp.Request) {
+		if req.IsNotification() {
+			if nh, ok := m.notificationHandlers[req.Method]; ok {
+				nh(req.Params)
+			}
+		} else {
+			mh, ok := m.methodHandlers[req.Method]
+			if !ok {
+				m.write(NewResponseError(req.ID, ErrMethodNotFound))
+				return
+			}
+			result, err := mh(req.Params)
+			if err != nil {
+				m.write(NewResponseError(req.ID, err))
+				return
+			}
+			m.write(NewResponse(req.ID, result))
+		}
+	}(req)
 }
 ```
 
@@ -850,7 +884,7 @@ export function deactivate(): Thenable<void> | undefined {
 
 # Visual Studio Code - `package.json`
 
-```json {|17-19|4-7|9-15}
+```json {|18-20|4-7|9-16|14}
 {
   "name": "vscode-cooklang",
   // ...
@@ -863,13 +897,39 @@ export function deactivate(): Thenable<void> | undefined {
     "languages": [{
       "id": "cook",
       "aliases": ["cook"],
-      "extensions": [".cook", ".cooklang"]
+      "extensions": [".cook", ".cooklang"],
+      "configuration": "./language-configuration.json"
     }]
   },
   // ...
   "dependencies": {
     "vscode-languageclient": "^8.1.0"
   }
+}
+```
+
+---
+
+# Visual Studio Code - `language-configuration.json`
+
+```json
+{
+    "comments": {
+        "lineComment": "--",
+        "blockComment": [ "[-", "-]" ]
+    },
+    "brackets": [
+        ["{", "}"],
+        ["[", "]"]
+    ],
+    "autoClosingPairs": [
+        ["{", "}"],
+        ["[", "]"]
+    ],
+    "surroundingPairs": [
+        ["{", "}"],
+        ["[", "]"]
+    ]
 }
 ```
 
@@ -1282,6 +1342,29 @@ p.HandleMethod(messages.CompletionRequestMethod, func(rawParams json.RawMessage)
 
 ---
 
+# Parser should return something useful
+
+```
+Input:                @pizza{1
+Ingredient name:       ^^^^^
+Quantity:                   ^^^
+```
+
+```go
+results, err := cooklang.Parse(input)
+// err == ErrUnterminatedQuantity
+// results is equal to:
+Ingredient{
+  Name: "pizza",
+  Range: NewRange(0, 0, 0, 10),
+  Quantity: {
+    Value: "1",
+    Range: NewRange(0, 0, 0, 8),
+  },
+}
+```
+---
+
 # Trigger autocomplete with `Ctrl-X, Ctrl-O` in Neovim
 
 * Neovim requires a plugin like `nvim-cmp` to display suggestions as you type
@@ -1346,6 +1429,7 @@ layout: two-cols-header
   * Compiled
   * Support LSP implementation
   * Be easy to learn
+  * Work well with HTMX and Hotwire
   * Use standard Go syntax where possible
   * Use Go functions in-line
 * Used in production at a major insurer to generate insurance PDFs
@@ -1464,6 +1548,18 @@ flowchart RL
 
 ---
 
+# No syntax highlighting or intellisense
+
+<img src="gohtml.png" width="450"/>
+
+---
+
+# templ is faster
+
+<img src="chart.png" width="800"/>
+
+---
+
 # `example.templ`
 
 ```go {|3|4|3-5,9|11-13}
@@ -1518,11 +1614,6 @@ func Hello(name string) templ.Component {
 	})
 }
 ```
----
-
-# templ VS Code Extension &amp; LSP
-
-<img src="templ_error.png"/>
 
 ---
 
@@ -1533,6 +1624,12 @@ go build
 # github.com/a-h/examplelsp/templtemplates
 ./example_templ.go:67:22: person.LastName undefined (type Person has no field or method LastName)
 ```
+
+---
+
+# templ VS Code Extension &amp; LSP
+
+<img src="templ_error.png"/>
 
 ---
 
@@ -1562,6 +1659,196 @@ sequenceDiagram
 <img src="templ_web.png"/>
 
 ---
+layout: section
+---
+
+# Parsing
+
+---
+
+# `templ` uses the `github.com/a-h/parse` library
+
+```go{|1-2|4-7|9-12|14-}
+input := parse.NewInput("abc")
+// input.Index == 0
+
+parse.String("a").Parse(input)
+// "abc"
+// --^
+// input.Index == 1
+
+parse.String("b").Parse(input)
+// "abc"
+// ---^
+// input.Index == 2
+
+parse.ZeroToNine().Parse(input)
+// "abc"
+// ---^
+// input.Index == 2
+// input.Position == parse.Position{Line: 0, Col: 2}
+```
+
+---
+note: true
+---
+
+# Create parsers
+
+```go
+var YearParser = parse.StringFrom(parse.ZeroToNine, parse.ZeroToNine, parse.ZeroToNine, parse.ZeroToNine)
+
+input := parse.NewInput("2000-03-01")
+// input.Index = 0
+
+result, ok, err := parse.StringFrom(YearParser).Parse(input)
+// "2000-03-01"
+// -----^
+// input.Index = 4
+//
+// result == "2000"
+// ok == true
+// err == nil
+```
+
+---
+
+# Parse into objects
+
+```go {|2|3|4-7|8|}
+var YearParser = parse.Func(func(in *parse.Input) (match time.Time, ok bool, err error) {
+	start := in.Index()
+	year, ok, err := Year.Parse(in)
+	if err != nil || !ok { 
+		in.Seek(start)
+		return
+	}
+	return time.Date(year, time.January, 1, 0, 0, 0, 0, time.UTC), true, nil
+})
+
+input := parse.NewInput("2003")
+
+result, ok, err := YearMonthParser.Parse(input)
+// "2000"
+// -----^
+// result == time.Date(2003, time.January, 1, 0, 0, 0, 0, time.UTC)
+// ok == true
+// err == EOF
+```
+
+---
+layout: two-cols-header
+---
+
+# `templ` object model
+
+::left::
+
+```go{|2-6|3|4,8-11|5,14-|}
+// <a .../> or <div ...>...</div>
+type Element struct {
+	Name       string
+	Attributes []Attribute
+	Children   []Node
+}
+
+type Attribute interface {
+	IsMultilineAttr() bool
+	Write(w io.Writer, indent int) error
+}
+
+// A Node appears within a template, e.g. an StringExpression, Element, IfExpression etc.
+type Node interface {
+	IsNode() bool
+	// Write out the string.
+	Write(w io.Writer, indent int) error
+}
+```
+
+::right::
+
+```go
+// href={ ... }
+type ExpressionAttribute struct {
+	Name       string
+	Expression Expression
+}
+
+// Expression containing Go code.
+type Expression struct {
+	Value string
+	Range Range
+}
+
+// Range of text within a file.
+type Range struct {
+	From Position
+	To   Position
+}
+```
+
+---
+
+# Self-closing element
+
+```go {|2|3-5|6-9|10-13|14-17|18-21|22}
+var selfClosingElement = parse.Func(func(pi *parse.Input) (e Element, ok bool, err error) {
+	start := pi.Index()
+	if _, ok, err = lt.Parse(pi); err != nil || !ok {
+		return
+	}
+	if e.Name, ok, err = elementNameParser.Parse(pi); err != nil || !ok {
+		pi.Seek(start)
+		return
+	}
+	if e.Attributes, ok, err = (attributesParser{}).Parse(pi); err != nil || !ok {
+		pi.Seek(start)
+		return
+	}
+	if _, _, err = parse.OptionalWhitespace.Parse(pi); err != nil {
+		pi.Seek(start)
+		return
+	}
+	if _, ok, err = parse.String("/>").Parse(pi); err != nil || !ok {
+		pi.Seek(start)
+		return
+	}
+	return e, true, nil
+})
+```
+
+---
+
+# The element parser parses self-closing or open-close elements
+
+```go {|4|5-7|8-11|12}
+type elementParser struct{}
+
+func (elementParser) Parse(pi *parse.Input) (r Element, ok bool, err error) {
+	start := pi.Position()
+	if r, ok, err = parse.Any[Element](selfClosingElement, elementOpenClose).Parse(pi); err != nil || !ok {
+		return
+	}
+	var msgs []string
+	if msgs, ok = r.Validate(); !ok {
+		err = parse.Error(fmt.Sprintf("<%s>: %s", r.Name, strings.Join(msgs, ", ")), start)
+	}
+	return r, ok, err
+}
+```
+
+---
+
+# Parsing summary
+
+* Alternative to ANTLR and PEG tooling
+* `parse.Input` keeps track of position
+* `parse.Error` includes the input file position
+* Provides good error messages to users
+* Build up small, testable parsers
+* Compose small parsers into bigger ones
+
+---
 
 # Summary
 
@@ -1571,35 +1858,32 @@ sequenceDiagram
 * Request/response handling
 * Notification handling
 * Using your LSP in an editor
-* Debugging
+* Logging
+* The templ language
+* Parsing
 
 ---
 layout: two-cols-header
 ---
 
-# Further reading
+# Thanks!
 
 ::left::
 
-* https://github.com/a-h/examplelsp
-  * The cooklang example LSP
 * https://github.com/a-h/understanding-lsp
   * Slides for this talk
+* https://github.com/a-h/examplelsp
+  * The cooklang example LSP
+* https://templ.guide
+  * templ documentation
 * https://github.com/a-h/templ
   * Contains the LSP for the templ language
+* https://github.com/a-h/parse
+  * Parsing library
 * https://lsp.dev/
   * Go struct definitions and tools for building LSPs
 
 ::right::
 
-@ me on X - @adrianhesketh
-
-<!--
-
-Part of Go's brilliant developer experience is the integration of gopls with text editors like VS Code, Neovim to provide features.
-Text editors use the Language Server Protocol standard to communicate.
-This standardisation allows multiple text editors to benefit from a single implementation.
-In this session, we'll go deeper to find out what's being passed between text editors and the language server, how we can create our own LSPs with Go, and how a project is building on top of the gopls LSP to add autocomplete features to HTML templates.
-
--->
-
+* @adrianhesketh
+* https://adrianhesketh.com
