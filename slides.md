@@ -748,7 +748,7 @@ m.HandleNotification("initialized", func(params json.RawMessage) (err error) {
 
 # "Hello, World"
 
-```go {2-12}
+```go {|2-12}
 m.HandleNotification("initialized", func(params json.RawMessage) (err error) {
 	go func() {
 		count := 1
@@ -794,7 +794,7 @@ layout: section
 
 ## init.lua
 
-```lua
+```lua {|2,7|6|}
 vim.api.nvim_create_autocmd('FileType', {
   pattern = 'cook',
   callback = function()
@@ -823,7 +823,7 @@ nvim --clean -u ./neovim-config/init.lua pizza.cook
 
 # Visual Studio Code - `extension.ts`
 
-```typescript {|7|8|11|13-14}
+```typescript {|11|7|8|13-14|}
 import { LanguageClient, LanguageClientOptions, ServerOptions, TransportKind } from "vscode-languageclient/node";
 
 let client: LanguageClient;
@@ -850,7 +850,7 @@ export function deactivate(): Thenable<void> | undefined {
 
 # Visual Studio Code - `package.json`
 
-```json {|4-7|9-15|17-19}
+```json {|17-19|4-7|9-15}
 {
   "name": "vscode-cooklang",
   // ...
@@ -888,7 +888,7 @@ export function deactivate(): Thenable<void> | undefined {
 
 <br>
 
-```java
+```java {|13|14}
 import com.intellij.platform.lsp.api.LspServerSupportProvider
 import com.intellij.platform.lsp.api.ProjectWideLspServerDescriptor
 
@@ -1259,17 +1259,15 @@ go func() {
 
 # Handle `textDocument/completion`
 
-```go {|2-5|6-10|11-19}
+```go {|2-5|7-8|9-}
 p.HandleMethod(messages.CompletionRequestMethod, func(rawParams json.RawMessage) (result any, err error) {
 	var params messages.CompletionParams
 	if err = json.Unmarshal(rawParams, &params); err != nil {
 		return
 	}
 
-	doc, err := cooklang.ParseString(fileURIToContents[params.TextDocument.URI])
-	if err != nil {
-		return []messages.CompletionItem{}, nil
-	}
+	// Ignore errors. We still want to provide a completion result.
+	doc, _ := cooklang.ParseString(fileURIToContents[params.TextDocument.URI])
 	var r []messages.CompletionItem
 	for _, step := range doc.Steps {
 		for _, ingredient := range step.Ingredients {
