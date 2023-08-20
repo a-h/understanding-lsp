@@ -6,7 +6,7 @@ lineNumbers: false
 title: Understanding Language Server Protocol
 ---
 
-# Understanding Language Server Protocol
+# Language Server Protocol
 
 ## Adrian Hesketh
 
@@ -1342,7 +1342,7 @@ p.HandleMethod(messages.CompletionRequestMethod, func(rawParams json.RawMessage)
 
 ---
 
-# Parser should return something useful
+# The parser should return something useful
 
 ```
 Input:                @pizza{1
@@ -1659,6 +1659,15 @@ sequenceDiagram
 <img src="templ_web.png"/>
 
 ---
+
+# templ Summary
+
+* There's value in notifying developers about problems early.
+* You can piggy back on other LSPs to make your project.
+* You can start a web server to inspect what's happening in your LSP.
+* `pprof` also works in the same way.
+
+---
 layout: section
 ---
 
@@ -1729,7 +1738,7 @@ var YearParser = parse.Func(func(in *parse.Input) (match time.Time, ok bool, err
 input := parse.NewInput("2003")
 
 result, ok, err := YearMonthParser.Parse(input)
-// "2000"
+// "2003"
 // -----^
 // result == time.Date(2003, time.January, 1, 0, 0, 0, 0, time.UTC)
 // ok == true
@@ -1815,6 +1824,32 @@ var selfClosingElement = parse.Func(func(pi *parse.Input) (e Element, ok bool, e
 	}
 	return e, true, nil
 })
+```
+
+---
+
+# Unit test
+
+```go
+{
+	name:  "element: self-closing with single expression attribute",
+	input: `<a href={ "test" }/>`,
+	expected: Element{
+		Name: "a",
+		Attributes: []Attribute{
+			ExpressionAttribute{
+				Name: "href",
+				Expression: Expression{
+					Value: `"test"`,
+					Range: Range{
+						From: Position{Index: 10, Line: 0, Col: 10},
+						To: Position{Index: 16, Line: 0, Col: 16},
+					},
+				},
+			},
+		},
+	},
+},
 ```
 
 ---
